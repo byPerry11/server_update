@@ -1,0 +1,3 @@
+Este es un archivo de ejemplo en el servidor.
+Puedes agregar más archivos aquí para compartirlos con los clientes.
+
