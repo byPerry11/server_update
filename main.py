@@ -18,6 +18,7 @@ class UpdateApp:
         self.file_server = None
         self.current_mode = "cliente"  # "servidor" o "cliente"
         self.config_file = Path("Config.txt")
+        self.server_port = 65432  # Puerto por defecto
         
         # Crear UI
         self.setup_ui()
@@ -148,16 +149,19 @@ class UpdateApp:
     def create_client_ui(self) -> ft.Container:
         """Crea la interfaz del modo cliente."""
         # Información de configuración
-        self.client_config_label = ft.Text(
-            "IP del Servidor: -",
-            size=14
-        )
-        
-        # Campo para editar IP (opcional)
+        self.client_config_label = ft.Text("IP del Servidor: -", size=14)
+        self.client_config_port_label = ft.Text("Puerto: -", size=14)
+
+        # Campos para editar IP y puerto
         self.client_ip_input = ft.TextField(
             label="IP del Servidor",
             hint_text="192.168.1.50",
             width=300
+        )
+        self.client_port_input = ft.TextField(
+            label="Puerto del Servidor",
+            hint_text="65432",
+            width=150
         )
         
         self.client_save_config_btn = ft.ElevatedButton(
@@ -202,12 +206,15 @@ class UpdateApp:
             content=ft.Column(
                 [
                     self.client_config_label,
+                    self.client_config_port_label,
                     ft.Row(
                         [
                             self.client_ip_input,
+                            self.client_port_input,
                             self.client_save_config_btn,
                         ],
-                        alignment=ft.MainAxisAlignment.START
+                        alignment=ft.MainAxisAlignment.START,
+                        spacing=10
                     ),
                     ft.Divider(height=20),
                     self.client_sync_btn,
@@ -262,7 +269,7 @@ class UpdateApp:
             # Iniciar servidor
             self.file_server = FileServer(
                 folder_path="server_folder",
-                port=65432,
+                port=self.server_port,
                 log_callback=self.add_server_log
             )
             self.file_server.start()
@@ -272,12 +279,11 @@ class UpdateApp:
             self.server_status_label.value = "Servidor Activo"
             self.server_status_label.color = "green"
             self.server_ip_label.value = f"IP Local: {local_ip}"
+            self.server_port_label.value = f"Puerto: {self.server_port}"
             self.server_toggle_btn.text = "Detener Servidor"
             self.server_toggle_btn.bgcolor = "red"
-            # No cambiar icono dinámicamente - causa error en Flet
-            # El icono se mantiene, solo cambiamos texto y color
             
-            self.add_server_log(f"Servidor iniciado en {local_ip}:65432")
+            self.add_server_log(f"Servidor iniciado en {local_ip}:{self.server_port}")
         else:
             # Detener servidor
             self.file_server.stop()
@@ -287,80 +293,63 @@ class UpdateApp:
             self.server_status_label.value = "Servidor Inactivo"
             self.server_status_label.color = "red"
             self.server_ip_label.value = "IP Local: -"
+            self.server_port_label.value = f"Puerto: {self.server_port}"
             self.server_toggle_btn.text = "Iniciar Servidor"
             self.server_toggle_btn.bgcolor = "green"
-            # No cambiar icono dinámicamente - causa error en Flet
-            # El icono se mantiene, solo cambiamos texto y color
         
         self.page.update()
     
     def load_config(self):
         """Carga la configuración desde Config.txt."""
-        try:
-            if self.config_file.exists():
-                try:
-                    with open(self.config_file, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if line.startswith("SERVER_IP="):
-                                server_ip = line.split("=", 1)[1].strip()
-                                # Asegurarse de que los controles existan antes de modificar
-                                if hasattr(self, 'client_config_label'):
-                                    try:
-                                        self.client_config_label.value = f"IP del Servidor: {server_ip}"
-                                    except:
-                                        pass
-                                if hasattr(self, 'client_ip_input'):
-                                    try:
-                                        self.client_ip_input.value = server_ip
-                                    except:
-                                        pass
-                                break
-                except Exception as e:
-                    if hasattr(self, 'client_status_label'):
-                        try:
-                            self.client_status_label.value = f"Error leyendo Config.txt: {e}"
-                        except:
-                            pass
-            else:
-                # Crear archivo por defecto si no existe
-                try:
-                    with open(self.config_file, "w", encoding="utf-8") as f:
-                        f.write("SERVER_IP=192.168.1.50\n")
-                    if hasattr(self, 'client_ip_input'):
-                        try:
-                            self.client_ip_input.value = "192.168.1.50"
-                        except:
-                            pass
-                except Exception:
-                    pass
-            
-            # Actualizar página solo si está disponible
-            try:
-                if hasattr(self, 'page') and self.page:
-                    self.page.update()
-            except:
-                pass
-        except Exception as ex:
-            # Silenciar errores durante la carga inicial
-            pass
+        server_ip = "192.168.1.50"
+        server_port = 65432
+
+        if self.config_file.exists():
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                config = {line.split("=")[0].strip(): line.split("=")[1].strip() for line in f if "=" in line}
+                server_ip = config.get("SERVER_IP", server_ip)
+                server_port = int(config.get("SERVER_PORT", server_port))
+
+        self.server_port = server_port
+        self.client_ip_input.value = server_ip
+        self.client_port_input.value = str(server_port)
+        self.client_config_label.value = f"IP del Servidor: {server_ip}"
+        self.client_config_port_label.value = f"Puerto: {server_port}"
+        self.server_port_label.value = f"Puerto: {server_port}"
+
+        if not self.config_file.exists():
+            self.save_config(None) # Guardar valores por defecto
+
+        self.page.update()
     
     def save_config(self, e):
         """Guarda la configuración en Config.txt."""
-        server_ip = self.client_ip_input.value.strip() if self.client_ip_input.value else ""
-        if not server_ip:
-            server_ip = "192.168.1.50"  # Valor por defecto
-            self.client_ip_input.value = server_ip
+        server_ip = self.client_ip_input.value.strip() or "192.168.1.50"
+        try:
+            server_port = int(self.client_port_input.value.strip() or "65432")
+            if not 1024 < server_port < 65535:
+                raise ValueError("Puerto fuera de rango")
+        except ValueError:
+            self.client_status_label.value = "Error: El puerto debe ser un número entre 1025 y 65534"
+            self.page.update()
+            return
+
+        self.server_port = server_port
+        self.client_ip_input.value = server_ip
+        self.client_port_input.value = str(server_port)
         
         try:
             with open(self.config_file, "w", encoding="utf-8") as f:
                 f.write(f"SERVER_IP={server_ip}\n")
+                f.write(f"SERVER_PORT={server_port}\n")
             
             self.client_config_label.value = f"IP del Servidor: {server_ip}"
+            self.client_config_port_label.value = f"Puerto: {server_port}"
+            self.server_port_label.value = f"Puerto: {server_port}"
             self.client_status_label.value = "Configuración guardada"
             self.page.update()
-        except Exception as e:
-            self.client_status_label.value = f"Error guardando configuración: {e}"
+        except Exception as ex:
+            self.client_status_label.value = f"Error guardando configuración: {ex}"
             self.page.update()
     
     def update_client_status(self, message: str):
@@ -399,7 +388,7 @@ class UpdateApp:
             """Hilo de sincronización."""
             client = FileClient(
                 server_ip=server_ip,
-                server_port=65432,
+                server_port=self.server_port,
                 local_folder="client_updates",
                 progress_callback=self.update_client_progress,
                 status_callback=self.update_client_status

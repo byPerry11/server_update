@@ -74,16 +74,26 @@ class FileServer:
             print(message)
     
     def get_local_ip(self) -> str:
-        """Obtiene la IP local del servidor."""
+        """Obtiene la IP local del servidor, priorizando métodos offline."""
         try:
-            # Conectar a un servidor externo para obtener la IP local
+            # Método 1: Iterar sobre las IPs asociadas al hostname
+            hostname = socket.gethostname()
+            addrs = socket.gethostbyname_ex(hostname)[2]
+            for ip in addrs:
+                if not ip.startswith("127."):
+                    return ip
+        except Exception:
+            pass # Continuar al siguiente método si este falla
+
+        try:
+            # Método 2: Conectar a un servidor externo (fallback)
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             ip = s.getsockname()[0]
             s.close()
             return ip
         except Exception:
-            return "127.0.0.1"
+            return "127.0.0.1" # Fallback final
     
     def generate_manifest(self) -> Dict[str, str]:
         """Genera el manifesto del servidor."""
@@ -154,8 +164,11 @@ class FileServer:
                 # Enviar cada archivo solicitado
                 for relative_path in requested_files:
                     self.send_file(client_socket, relative_path)
-                    # Esperar confirmación antes del siguiente archivo
-                    client_socket.recv(1024)  # ACK
+                    # Esperar ACK/NACK del cliente
+                    ack = client_socket.recv(1024)
+                    if ack == b"NACK":
+                        self.log(f"Fallo en cliente al recibir: {relative_path} (hash incorrecto)")
+
             else:
                 self.log("No hay archivos para sincronizar")
             
@@ -243,33 +256,38 @@ class FileClient:
         """Genera el manifesto local del cliente."""
         return generate_manifest(self.local_folder)
     
-    def compare_manifests(self, server_manifest: Dict[str, str], 
-                         local_manifest: Dict[str, str]) -> List[str]:
+    def get_sync_actions(self, server_manifest: Dict[str, str], 
+                         local_manifest: Dict[str, str]) -> Tuple[List[str], List[str]]:
         """
-        Compara los manifestos y retorna lista de archivos a descargar.
+        Compara manifestos y retorna listas de acciones (descargar, eliminar).
         
         Returns:
-            Lista de rutas relativas de archivos que necesitan descarga
+            Tuple (files_to_download, files_to_delete)
         """
         files_to_download = []
-        
+        server_files = set(server_manifest.keys())
+        local_files = set(local_manifest.keys())
+
+        # Archivos a descargar (nuevos o modificados)
         for relative_path, server_hash in server_manifest.items():
             local_hash = local_manifest.get(relative_path)
-            
-            # Archivo faltante o hash diferente
             if local_hash is None or local_hash != server_hash:
                 files_to_download.append(relative_path)
         
-        return files_to_download
+        # Archivos a eliminar (existen localmente pero no en el servidor)
+        files_to_delete = list(local_files - server_files)
+        
+        return files_to_download, files_to_delete
     
-    def receive_file(self, client_socket: socket.socket, relative_path: str) -> bool:
-        """Recibe un archivo del servidor y lo guarda localmente."""
+    def receive_file(self, client_socket: socket.socket, relative_path: str, expected_hash: str) -> bool:
+        """Recibe un archivo del servidor, lo guarda y verifica su hash."""
         try:
             # Recibir tamaño del archivo
             size_data = b""
             while b"FILE_SIZE:" not in size_data:
                 chunk = client_socket.recv(1024)
                 if not chunk:
+                    self.update_status(f"Error: Conexión cerrada al recibir tamaño de {relative_path}")
                     return False
                 size_data += chunk
             
@@ -277,7 +295,7 @@ class FileClient:
             file_size = int(size_str)
             client_socket.sendall(b"ACK")  # Confirmar recepción de tamaño
             
-            # Crear estructura de directorios si es necesario
+            # Crear estructura de directorios
             file_path = self.local_folder / relative_path
             file_path.parent.mkdir(parents=True, exist_ok=True)
             
@@ -291,22 +309,33 @@ class FileClient:
                     f.write(chunk)
                     received += len(chunk)
             
-            # Verificar hash después de la descarga (opcional pero recomendado)
+            if received < file_size:
+                self.update_status(f"Error: Transferencia incompleta para {relative_path}")
+                file_path.unlink() # Eliminar archivo incompleto
+                return False
+
+            # Verificar hash después de la descarga
             calculated_hash = calculate_file_hash(file_path)
-            # Nota: Aquí podríamos verificar contra el manifesto del servidor
-            # pero por simplicidad solo verificamos que el hash se calculó correctamente
+            if calculated_hash != expected_hash:
+                self.update_status(f"Error: Hash incorrecto para {relative_path}. Archivo corrupto.")
+                file_path.unlink()  # Eliminar archivo corrupto
+                client_socket.sendall(b"NACK") # Notificar al servidor del fallo
+                return False
             
-            self.update_status(f"Descargado: {relative_path} ({file_size} bytes)")
-            client_socket.sendall(b"ACK")  # Confirmar recepción completa
+            self.update_status(f"Verificado: {relative_path}")
+            client_socket.sendall(b"ACK")  # Confirmar recepción completa y correcta
             return True
             
         except Exception as e:
             self.update_status(f"Error recibiendo {relative_path}: {e}")
+            # Intentar eliminar el archivo si algo falló
+            if 'file_path' in locals() and file_path.exists():
+                file_path.unlink()
             return False
     
     def sync(self) -> Tuple[bool, str]:
         """
-        Sincroniza archivos con el servidor.
+        Sincroniza archivos con el servidor, incluyendo descargas y eliminaciones.
         
         Returns:
             Tuple (éxito: bool, mensaje: str)
@@ -314,63 +343,82 @@ class FileClient:
         try:
             self.update_status("Conectando al servidor...")
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(30)  # Timeout de 30 segundos
+            client_socket.settimeout(30)
             client_socket.connect((self.server_ip, self.server_port))
             
             self.update_status("Conectado. Recibiendo manifesto...")
             
-            # Recibir tamaño del manifesto
+            # Recibir manifesto del servidor
             manifest_size_data = b""
             while b"MANIFEST_SIZE:" not in manifest_size_data:
                 chunk = client_socket.recv(1024)
-                if not chunk:
-                    return False, "Error recibiendo tamaño del manifesto"
+                if not chunk: return False, "Error recibiendo tamaño del manifesto"
                 manifest_size_data += chunk
             
             size_str = manifest_size_data.decode().split("MANIFEST_SIZE:")[1].split("\n")[0]
             manifest_size = int(size_str)
-            client_socket.sendall(b"ACK")  # Confirmar
+            client_socket.sendall(b"ACK")
             
-            # Recibir manifesto
             manifest_data = b""
             while len(manifest_data) < manifest_size:
                 chunk = client_socket.recv(min(4096, manifest_size - len(manifest_data)))
-                if not chunk:
-                    return False, "Error recibiendo manifesto"
+                if not chunk: return False, "Error recibiendo manifesto"
                 manifest_data += chunk
             
             server_manifest = json.loads(manifest_data.decode())
             self.update_status(f"Manifesto recibido ({len(server_manifest)} archivos en servidor)")
             
-            # Generar manifesto local
-            self.update_status("Generando manifesto local...")
+            # Generar y comparar manifestos
             local_manifest = self.generate_local_manifest()
+            files_to_download, files_to_delete = self.get_sync_actions(server_manifest, local_manifest)
             
-            # Comparar manifestos
-            self.update_status("Comparando manifestos...")
-            files_to_download = self.compare_manifests(server_manifest, local_manifest)
+            # Eliminar archivos obsoletos
+            deleted_count = 0
+            if files_to_delete:
+                self.update_status(f"Eliminando {len(files_to_delete)} archivos obsoletos...")
+                for relative_path in files_to_delete:
+                    file_path = self.local_folder / relative_path
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                            self.update_status(f"Eliminado: {relative_path}")
+                            deleted_count += 1
+                    except Exception as e:
+                        self.update_status(f"Error eliminando {relative_path}: {e}")
+
+            # Descargar archivos nuevos o modificados
+            downloaded_count = 0
+            if files_to_download:
+                self.update_status(f"Archivos a descargar: {len(files_to_download)}")
+                request_json = json.dumps(files_to_download)
+                client_socket.sendall(request_json.encode() + b"END_REQUEST")
+                
+                total_files = len(files_to_download)
+                for idx, relative_path in enumerate(files_to_download):
+                    self.update_status(f"Descargando ({idx + 1}/{total_files}): {relative_path}")
+                    expected_hash = server_manifest[relative_path]
+                    if self.receive_file(client_socket, relative_path, expected_hash):
+                        downloaded_count += 1
+                    self.update_progress(idx + 1, total_files)
+            else:
+                client_socket.sendall(b"END_REQUEST")
+
+            # Mensaje final
+            summary = []
+            if downloaded_count > 0:
+                summary.append(f"{downloaded_count} archivos descargados")
+            if deleted_count > 0:
+                summary.append(f"{deleted_count} archivos eliminados")
             
-            if not files_to_download:
-                self.update_status("Todos los archivos están sincronizados")
-                client_socket.close()
-                return True, "Sincronización completa - No hay archivos nuevos"
-            
-            self.update_status(f"Archivos a descargar: {len(files_to_download)}")
-            
-            # Enviar lista de archivos solicitados
-            request_json = json.dumps(files_to_download)
-            client_socket.sendall(request_json.encode() + b"END_REQUEST")
-            
-            # Recibir archivos
-            total_files = len(files_to_download)
-            for idx, relative_path in enumerate(files_to_download):
-                self.update_status(f"Descargando ({idx + 1}/{total_files}): {relative_path}")
-                self.receive_file(client_socket, relative_path)
-                self.update_progress(idx + 1, total_files)
-            
-            self.update_status("Sincronización completada exitosamente")
+            if not summary:
+                message = "Sincronización completa - No hay cambios"
+            else:
+                message = f"Sincronización completa - {', '.join(summary)}"
+
+            success = downloaded_count == len(files_to_download)
+            self.update_status(f"{'✓' if success else '✗'} {message}")
             client_socket.close()
-            return True, f"Sincronización completa - {total_files} archivos descargados"
+            return success, message
             
         except socket.timeout:
             return False, "Timeout: No se pudo conectar al servidor"
