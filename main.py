@@ -41,15 +41,15 @@ class UpdateApp:
         self.mode_selector = ft.SegmentedButton(
             selected={"cliente"},
             segments=[
-                ft.Segment(
+                ft.Icon(
                     value="servidor",
                     label=ft.Text("Modo Servidor"),
-                    icon="dns"
+                    icon=ft.icons.DNS
                 ),
-                ft.Segment(
+                ft.Icon(
                     value="cliente",
                     label=ft.Text("Modo Cliente"),
-                    icon="download"
+                    icon=ft.icons.DOWNLOAD
                 ),
             ],
             on_change=self.on_mode_changed
