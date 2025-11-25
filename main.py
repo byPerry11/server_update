@@ -1,86 +1,157 @@
 import sys
 import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QDialog, QVBoxLayout, 
-                               QPushButton, QLabel, QWidget, QMessageBox)
-from PySide6.QtCore import Qt
+                               QPushButton, QLabel, QWidget, QMessageBox, QComboBox, QHBoxLayout, QFrame)
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QIcon, QPixmap
 from config_manager import ConfigManager
 from server_backend import FileServer
 from client_backend import FileClient
 from gui_components import ServerWidget, ClientWidget
 
-class ModeSelectionDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Select Mode")
-        self.selected_mode = None
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Choose application mode:"))
-        
-        server_btn = QPushButton("Server (Admin)")
-        server_btn.clicked.connect(lambda: self.set_mode("server"))
-        layout.addWidget(server_btn)
-
-        client_btn = QPushButton("Client")
-        client_btn.clicked.connect(lambda: self.set_mode("client"))
-        layout.addWidget(client_btn)
-
-    def set_mode(self, mode):
-        self.selected_mode = mode
-        self.accept()
+# Stylesheet
+STYLESHEET = """
+QMainWindow {
+    background-color: white;
+}
+QWidget {
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 14px;
+    color: #333;
+}
+QPushButton {
+    background-color: #0078D7;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: bold;
+}
+QPushButton:hover {
+    background-color: #005A9E;
+}
+QPushButton:pressed {
+    background-color: #004578;
+}
+QPushButton:disabled {
+    background-color: #CCCCCC;
+    color: #666;
+}
+QLabel {
+    color: #333;
+}
+QComboBox {
+    border: 1px solid #0078D7;
+    border-radius: 4px;
+    padding: 4px;
+    min-width: 100px;
+}
+QProgressBar {
+    border: 1px solid #0078D7;
+    border-radius: 4px;
+    text-align: center;
+}
+QProgressBar::chunk {
+    background-color: #0078D7;
+}
+QTextEdit {
+    border: 1px solid #DDD;
+    background-color: #F9F9F9;
+    border-radius: 4px;
+}
+"""
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config_manager = ConfigManager()
         self.setWindowTitle("LAN File Sharer")
-        self.resize(400, 300) # Small window
+        self.resize(500, 400)
         
+        # Set Icon
+        if os.path.exists("assets/Icon_app.ico"):
+            self.setWindowIcon(QIcon("assets/Icon_app.ico"))
+        
+        # Apply Theme
+        self.setStyleSheet(STYLESHEET)
+        
+        self.backend = None
+        self.central_widget = None
+        
+        self.setup_main_layout()
         self.init_mode()
+
+    def setup_main_layout(self):
+        # Main container
+        self.main_container = QWidget()
+        self.setCentralWidget(self.main_container)
+        self.main_layout = QVBoxLayout(self.main_container)
+        
+        # Header (Mode Selector)
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Mode:"))
+        
+        self.mode_selector = QComboBox()
+        self.mode_selector.addItems(["Client", "Server"])
+        self.mode_selector.currentIndexChanged.connect(self.change_mode)
+        header_layout.addWidget(self.mode_selector)
+        header_layout.addStretch()
+        
+        self.main_layout.addLayout(header_layout)
+        
+        # Content Area (Placeholder)
+        self.content_area = QWidget()
+        self.content_layout = QVBoxLayout(self.content_area)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.addWidget(self.content_area)
+        
+        # Footer (Logo)
+        footer_layout = QHBoxLayout()
+        footer_layout.addStretch()
+        
+        logo_label = QLabel()
+        if os.path.exists("assets/TPV_logo.png"):
+            pixmap = QPixmap("assets/TPV_logo.png")
+            if not pixmap.isNull():
+                logo_label.setPixmap(pixmap.scaled(100, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        footer_layout.addWidget(logo_label)
+        
+        self.main_layout.addLayout(footer_layout)
 
     def init_mode(self):
         mode = self.config_manager.get("mode")
+        # Default to Client if invalid
+        if mode not in ["client", "server"]:
+            mode = "client"
+            
+        # Set selector without triggering signal initially
+        self.mode_selector.blockSignals(True)
+        self.mode_selector.setCurrentText(mode.capitalize())
+        self.mode_selector.blockSignals(False)
         
-        # If mode is not set or invalid (e.g. default "client" but maybe we want to force choice first time? 
-        # The config_manager defaults to "client". 
-        # Requirement: "la primera vez que defines el modo (Cliente/Servidor) se mantiene".
-        # So I should probably check if it was explicitly set? 
-        # My config_manager sets default. I should probably change config_manager to not have a default mode or check if config file existed.
-        # For now, let's assume if config file didn't exist, we might want to ask.
-        # But config_manager.load_config() creates it if missing.
-        # Let's check if we should ask. 
-        # Actually, let's just ask if the user wants to change it? No, "se mantiene".
-        # I'll implement a logic: If config.txt exists, use it. If not (or first run), ask.
-        # Since config_manager creates it, I can't easily tell.
-        # I'll modify this logic: I will check if "mode_set" flag is in config? 
-        # Or just rely on the user editing config.txt as per requirements?
-        # Requirement: "Esta ip debe estar configurada en un archivo config.txt... En este mismo archivo se tambien se debe asignar la ruta..."
-        # It implies manual config for IP/Folder.
-        # But for Mode: "la primera vez que defines el modo... se mantiene". This implies UI selection.
+        self.load_mode_ui(mode)
+
+    def change_mode(self, index):
+        mode = self.mode_selector.currentText().lower()
         
-        # I'll check if I can force a selection if it's the "default" default. 
-        # I'll add a specific check.
-        pass 
-
-        # Let's just show the dialog if we want to be safe, or maybe add a "Reset" feature.
-        # For this implementation, I will assume "client" default is fine, BUT I will add a check:
-        # If the config file was just created (I can't tell easily).
-        # I'll just add a "mode_configured": false to default config.
+        # Confirm change if backend is running? 
+        # For simplicity, we just stop and switch.
+        if self.backend:
+            if isinstance(self.backend, FileServer):
+                self.backend.stop_server()
+            elif isinstance(self.backend, FileClient):
+                self.backend.stop_sync()
         
-        if not self.config_manager.get("mode_configured"):
-            dialog = ModeSelectionDialog(self)
-            if dialog.exec():
-                mode = dialog.selected_mode
-                self.config_manager.set("mode", mode)
-                self.config_manager.set("mode_configured", True)
-            else:
-                sys.exit() # User closed dialog
+        self.config_manager.set("mode", mode)
+        self.load_mode_ui(mode)
 
-        self.setup_ui(mode)
+    def load_mode_ui(self, mode):
+        # Clear current content
+        if self.central_widget:
+            self.central_widget.setParent(None)
+            self.central_widget.deleteLater()
+            self.backend = None
 
-    def setup_ui(self, mode):
         if mode == "server":
             self.setWindowTitle("LAN File Sharer - Server")
             self.backend = FileServer(self.config_manager)
@@ -90,10 +161,10 @@ class MainWindow(QMainWindow):
             self.backend = FileClient(self.config_manager)
             self.central_widget = ClientWidget(self.backend)
         
-        self.setCentralWidget(self.central_widget)
+        self.content_layout.addWidget(self.central_widget)
 
     def closeEvent(self, event):
-        if hasattr(self, 'backend'):
+        if hasattr(self, 'backend') and self.backend:
             if isinstance(self.backend, FileServer):
                 self.backend.stop_server()
             elif isinstance(self.backend, FileClient):
