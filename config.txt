@@ -1,0 +1,7 @@
+{
+    "mode": "server",
+    "server_ip": "127.0.0.1",
+    "server_port": 5000,
+    "shared_folder": "C:\\Users\\tagit\\source\\repos\\server_update\\shared_downloads",
+    "mode_configured": true
+}
