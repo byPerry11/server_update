@@ -9,6 +9,15 @@ from server_backend import FileServer
 from client_backend import FileClient
 from gui_components import ServerWidget, ClientWidget
 
+def resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller"""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
 # Stylesheet
 STYLESHEET = """
 QMainWindow {
@@ -18,6 +27,7 @@ QWidget {
     font-family: 'Segoe UI', sans-serif;
     font-size: 14px;
     color: #333;
+    border-radius: 4px;
 }
 QPushButton {
     background-color: #0078D7;
@@ -65,12 +75,13 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config_manager = ConfigManager()
-        self.setWindowTitle("LAN File Sharer")
+        self.setWindowTitle("Server Update Manager")
         self.resize(500, 400)
         
         # Set Icon
-        if os.path.exists("assets/Icon_app.ico"):
-            self.setWindowIcon(QIcon("assets/Icon_app.ico"))
+        icon_path = resource_path("assets/Icon_app.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         # Apply Theme
         self.setStyleSheet(STYLESHEET)
@@ -110,8 +121,9 @@ class MainWindow(QMainWindow):
         footer_layout.addStretch()
         
         logo_label = QLabel()
-        if os.path.exists("assets/TPV_logo.png"):
-            pixmap = QPixmap("assets/TPV_logo.png")
+        logo_path = resource_path("assets/TPV_logo.png")
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path)
             if not pixmap.isNull():
                 logo_label.setPixmap(pixmap.scaled(100, 50, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         footer_layout.addWidget(logo_label)
@@ -153,11 +165,11 @@ class MainWindow(QMainWindow):
             self.backend = None
 
         if mode == "server":
-            self.setWindowTitle("LAN File Sharer - Server")
+            self.setWindowTitle("Server Update Manager - Server")
             self.backend = FileServer(self.config_manager)
             self.central_widget = ServerWidget(self.backend)
         else:
-            self.setWindowTitle("LAN File Sharer - Client")
+            self.setWindowTitle("Server Update Manager - Client")
             self.backend = FileClient(self.config_manager)
             self.central_widget = ClientWidget(self.backend)
         
